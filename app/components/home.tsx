@@ -23,7 +23,13 @@ import DownloadIcon from "../icons/download.svg";
 
 import { Message, SubmitKey, useChatStore, ChatSession } from "../store";
 import { showModal, showToast } from "./ui-lib";
-import { copyToClipboard, downloadAs, isIOS, selectOrCopy } from "../utils";
+import {
+  copyToClipboard,
+  downloadAs,
+  isIOS,
+  isMobileScreen,
+  selectOrCopy,
+} from "../utils";
 import Locale from "../locales";
 
 import dynamic from "next/dynamic";
@@ -115,7 +121,7 @@ export function ChatList() {
           key={i}
           selected={i === selectedIndex}
           onClick={() => selectSession(i)}
-          onDelete={() => removeSession(i)}
+          onDelete={() => confirm(Locale.Home.DeleteChat) && removeSession(i)}
         />
       ))}
     </div>
@@ -170,7 +176,10 @@ export function PromptHints(props: {
   );
 }
 
-export function Chat(props: { showSideBar?: () => void, sideBarShowing?: boolean }) {
+export function Chat(props: {
+  showSideBar?: () => void;
+  sideBarShowing?: boolean;
+}) {
   type RenderMessage = Message & { preview?: boolean };
 
   const chatStore = useChatStore();
@@ -190,7 +199,6 @@ export function Chat(props: { showSideBar?: () => void, sideBarShowing?: boolean
   const [promptHints, setPromptHints] = useState<Prompt[]>([]);
   const onSearch = useDebouncedCallback(
     (text: string) => {
-      if (chatStore.config.disablePromptHint) return;
       setPromptHints(promptStore.search(text));
     },
     100,
@@ -203,15 +211,31 @@ export function Chat(props: { showSideBar?: () => void, sideBarShowing?: boolean
     inputRef.current?.focus();
   };
 
+  const scrollInput = () => {
+    const dom = inputRef.current;
+    if (!dom) return;
+    const paddingBottomNum: number = parseInt(
+      window.getComputedStyle(dom).paddingBottom,
+      10
+    );
+    dom.scrollTop = dom.scrollHeight - dom.offsetHeight + paddingBottomNum;
+  };
+
   // only search prompts when user input is short
   const SEARCH_TEXT_LIMIT = 30;
   const onInput = (text: string) => {
+    scrollInput();
     setUserInput(text);
     const n = text.trim().length;
-    if (n === 0 || n > SEARCH_TEXT_LIMIT) {
+
+    // clear search results
+    if (n === 0) {
       setPromptHints([]);
-    } else {
-      onSearch(text);
+    } else if (!chatStore.config.disablePromptHint && n < SEARCH_TEXT_LIMIT) {
+      // check if need to trigger auto completion
+      if (text.startsWith("/") && text.length > 1) {
+        onSearch(text.slice(1));
+      }
     }
   };
 
@@ -221,6 +245,7 @@ export function Chat(props: { showSideBar?: () => void, sideBarShowing?: boolean
     setIsLoading(true);
     chatStore.onUserInput(userInput).then(() => setIsLoading(false));
     setUserInput("");
+    setPromptHints([]);
     inputRef.current?.focus();
   };
 
@@ -257,6 +282,7 @@ export function Chat(props: { showSideBar?: () => void, sideBarShowing?: boolean
         chatStore
           .onUserInput(messages[i].content)
           .then(() => setIsLoading(false));
+        inputRef.current?.focus();
         return;
       }
     }
@@ -264,9 +290,7 @@ export function Chat(props: { showSideBar?: () => void, sideBarShowing?: boolean
 
   // for auto-scroll
   const latestMessageRef = useRef<HTMLDivElement>(null);
-
-  // wont scroll while hovering messages
-  const [autoScroll, setAutoScroll] = useState(false);
+  const [autoScroll, setAutoScroll] = useState(true);
 
   // preview messages
   const messages = (session.messages as RenderMessage[])
@@ -299,9 +323,18 @@ export function Chat(props: { showSideBar?: () => void, sideBarShowing?: boolean
   useLayoutEffect(() => {
     setTimeout(() => {
       const dom = latestMessageRef.current;
-      if (dom && !isIOS() && autoScroll) {
+      const inputDom = inputRef.current;
+
+      // only scroll when input overlaped message body
+      let shouldScroll = true;
+      if (dom && inputDom) {
+        const domRect = dom.getBoundingClientRect();
+        const inputRect = inputDom.getBoundingClientRect();
+        shouldScroll = domRect.top > inputRect.top;
+      }
+
+      if (dom && autoScroll && shouldScroll) {
         dom.scrollIntoView({
-          behavior: "smooth",
           block: "end",
         });
       }
@@ -315,7 +348,17 @@ export function Chat(props: { showSideBar?: () => void, sideBarShowing?: boolean
           className={styles["window-header-title"]}
           onClick={props?.showSideBar}
         >
-          <div className={styles["window-header-main-title"]}>
+          <div
+            className={`${styles["window-header-main-title"]} ${styles["chat-body-title"]}`}
+            onClick={() => {
+              const newTopic = prompt(Locale.Chat.Rename, session.topic);
+              if (newTopic && newTopic !== session.topic) {
+                chatStore.updateCurrentSession(
+                  (session) => (session.topic = newTopic!)
+                );
+              }
+            }}
+          >
             {session.topic}
           </div>
           <div className={styles["window-header-sub-title"]}>
@@ -375,32 +418,33 @@ export function Chat(props: { showSideBar?: () => void, sideBarShowing?: boolean
                   </div>
                 )}
                 <div className={styles["chat-message-item"]}>
-                  {(!isUser && !(message.preview || message.content.length === 0)) && (
-                    <div className={styles["chat-message-top-actions"]}>
-                      {message.streaming ? (
-                        <div
-                          className={styles["chat-message-top-action"]}
-                          onClick={() => onUserStop(i)}
-                        >
-                          {Locale.Chat.Actions.Stop}
-                        </div>
-                      ) : (
-                        <div
-                          className={styles["chat-message-top-action"]}
-                          onClick={() => onResend(i)}
-                        >
-                          {Locale.Chat.Actions.Retry}
-                        </div>
-                      )}
+                  {!isUser &&
+                    !(message.preview || message.content.length === 0) && (
+                      <div className={styles["chat-message-top-actions"]}>
+                        {message.streaming ? (
+                          <div
+                            className={styles["chat-message-top-action"]}
+                            onClick={() => onUserStop(i)}
+                          >
+                            {Locale.Chat.Actions.Stop}
+                          </div>
+                        ) : (
+                          <div
+                            className={styles["chat-message-top-action"]}
+                            onClick={() => onResend(i)}
+                          >
+                            {Locale.Chat.Actions.Retry}
+                          </div>
+                        )}
 
-                      <div
-                        className={styles["chat-message-top-action"]}
-                        onClick={() => copyToClipboard(message.content)}
-                      >
-                        {Locale.Chat.Actions.Copy}
+                        <div
+                          className={styles["chat-message-top-action"]}
+                          onClick={() => copyToClipboard(message.content)}
+                        >
+                          {Locale.Chat.Actions.Copy}
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    )}
                   {(message.preview || message.content.length === 0) &&
                   !isUser ? (
                     <LoadingIcon />
@@ -409,6 +453,10 @@ export function Chat(props: { showSideBar?: () => void, sideBarShowing?: boolean
                       className="markdown-body"
                       style={{ fontSize: `${fontSize}px` }}
                       onContextMenu={(e) => onRightClick(e, message)}
+                      onDoubleClickCapture={() => {
+                        if (!isMobileScreen()) return;
+                        setUserInput(message.content);
+                      }}
                     >
                       <Markdown content={message.content} />
                     </div>
@@ -425,7 +473,7 @@ export function Chat(props: { showSideBar?: () => void, sideBarShowing?: boolean
             </div>
           );
         })}
-        <div ref={latestMessageRef} style={{ opacity: 0, height: "2em" }}>
+        <div ref={latestMessageRef} style={{ opacity: 0, height: "1px" }}>
           -
         </div>
       </div>
@@ -444,7 +492,7 @@ export function Chat(props: { showSideBar?: () => void, sideBarShowing?: boolean
             onFocus={() => setAutoScroll(true)}
             onBlur={() => {
               setAutoScroll(false);
-              setTimeout(() => setPromptHints([]), 100);
+              setTimeout(() => setPromptHints([]), 500);
             }}
             autoFocus={!props?.sideBarShowing}
           />
@@ -573,7 +621,9 @@ export function Home() {
   return (
     <div
       className={`${
-        config.tightBorder ? styles["tight-container"] : styles.container
+        config.tightBorder && !isMobileScreen()
+          ? styles["tight-container"]
+          : styles.container
       }`}
     >
       <div
@@ -648,7 +698,11 @@ export function Home() {
             }}
           />
         ) : (
-          <Chat key="chat" showSideBar={() => setShowSideBar(true)} sideBarShowing={showSideBar} />
+          <Chat
+            key="chat"
+            showSideBar={() => setShowSideBar(true)}
+            sideBarShowing={showSideBar}
+          />
         )}
       </div>
     </div>

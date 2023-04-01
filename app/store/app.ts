@@ -89,7 +89,9 @@ export function isValidNumber(x: number, min: number, max: number) {
   return typeof x === "number" && x <= max && x >= min;
 }
 
-export function filterConfig(config: ModelConfig): Partial<ModelConfig> {
+export function filterConfig(oldConfig: ModelConfig): Partial<ModelConfig> {
+  const config = Object.assign({}, oldConfig);
+
   const validator: {
     [k in keyof ModelConfig]: (x: ModelConfig[keyof ModelConfig]) => boolean;
   } = {
@@ -103,7 +105,7 @@ export function filterConfig(config: ModelConfig): Partial<ModelConfig> {
       return isValidNumber(x as number, -2, 2);
     },
     temperature(x) {
-      return isValidNumber(x as number, 0, 1);
+      return isValidNumber(x as number, 0, 2);
     },
   };
 
@@ -204,6 +206,10 @@ interface ChatStore {
   resetConfig: () => void;
   updateConfig: (updater: (config: ChatConfig) => void) => void;
   clearAllData: () => void;
+}
+
+function countMessages(msgs: Message[]) {
+  return msgs.reduce((pre, cur) => pre + cur.content.length, 0);
 }
 
 const LOCAL_KEY = "chat-next-web-store";
@@ -393,8 +399,12 @@ export const useChatStore = create<ChatStore>()(
       summarizeSession() {
         const session = get().currentSession();
 
-        if (session.topic === DEFAULT_TOPIC && session.messages.length >= 3) {
-          // should summarize topic
+        // should summarize topic after chating more than 50 words
+        const SUMMARIZE_MIN_LEN = 50;
+        if (
+          session.topic === DEFAULT_TOPIC &&
+          countMessages(session.messages) >= SUMMARIZE_MIN_LEN
+        ) {
           requestWithPrompt(session.messages, Locale.Store.Prompt.Topic).then(
             (res) => {
               get().updateCurrentSession(
@@ -408,10 +418,7 @@ export const useChatStore = create<ChatStore>()(
         let toBeSummarizedMsgs = session.messages.slice(
           session.lastSummarizeIndex,
         );
-        const historyMsgLength = toBeSummarizedMsgs.reduce(
-          (pre, cur) => pre + cur.content.length,
-          0,
-        );
+        const historyMsgLength = countMessages(toBeSummarizedMsgs);
 
         if (historyMsgLength > 4000) {
           toBeSummarizedMsgs = toBeSummarizedMsgs.slice(
